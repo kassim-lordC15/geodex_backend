@@ -1,11 +1,11 @@
 const axios = require('axios');
 
 // Configuration de l'endpoint de l'API locale développée
-const API_URL = 'http://localhost:3000/api/pesee/enregistrer';
+const API_URL = 'http://localhost:3000/api/pesees';
 
 // Données fixes de simulation pour le hackathon
-const CAPTEUR_ID = '4cb36e2c-171c-43f7-a482-d9dd84cca165'; // UUID d'un capteur valide en BDD
-const SIGNATURE_EQUIPEMENT = 'SECURE_HARDWARE_SIGN_METER_01';
+const CAPTEUR_ID = 'SENSOR-003'; // Boundiali Nord (REVOQUE) pour déclencher HORS_ZONE
+const SIGNATURE_EQUIPEMENT = 'SECURE_HARDWARE_SIGN_METER_03';
 
 // Générateur automatique de coordonnées (Simule un trajet autour d'une zone minière)
 function genererPeseeAleatoire(modeFraude = false) {
