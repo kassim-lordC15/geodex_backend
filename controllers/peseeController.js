@@ -1,11 +1,26 @@
 const db = require('../config/db');
 const crypto = require('crypto');
 
-// 1. Enregistrer une pesée (IoT)
+// 1. Enregistrer une pesée (IoT) — avec support offline-first
 exports.enregistrerPesee = async (req, res) => {
-    const { capteur_id, poids_mesure_kg, latitude, longitude, signature_equipement } = req.body;
+    const { id, capteur_id, poids_mesure_kg, latitude, longitude, signature_equipement, date_releve } = req.body;
 
     try {
+        // Gestion doublon (sync offline)
+        if (id) {
+            const existing = await db.query(
+                'SELECT id FROM releves_pesee WHERE id = $1',
+                [id]
+            );
+            if (existing.rows.length > 0) {
+                return res.status(200).json({
+                    success: true,
+                    message: 'Pesée déjà enregistrée (sync offline)',
+                    data: { releve_id: id, statut: 'ALREADY_SYNCED' }
+                });
+            }
+        }
+
         const capteurQuery = `
             SELECT c.id, c.concession_id 
             FROM capteurs_iot c
@@ -22,11 +37,11 @@ exports.enregistrerPesee = async (req, res) => {
 
         const geoQuery = `
             SELECT ST_Contains(
-                (SELECT limites_spatiales FROM concessions WHERE id = $1),
-                ST_GeomFromEWKT($2)
+                (SELECT limites_spatialiaux FROM concessions WHERE id = $1)::geometry,
+                ST_SetSRID(ST_MakePoint($2, $3), 4326)::geometry
             ) as est_dans_zone;
         `;
-        const geoCheck = await db.query(geoQuery, [concession_id, pointGeoJSON]);
+        const geoCheck = await db.query(geoQuery, [concession_id, longitude, latitude]);
         const estDansZone = geoCheck.rows[0] ? geoCheck.rows[0].est_dans_zone : false;
 
         const lastHashQuery = `SELECT hash_actuel FROM releves_pesee ORDER BY date_releve DESC LIMIT 1`;
@@ -36,30 +51,39 @@ exports.enregistrerPesee = async (req, res) => {
         const dataToHash = `${capteur_id}-${poids_mesure_kg}-${latitude}-${longitude}-${signature_equipement}-${hash_precedent || 'GENESIS'}-${Date.now()}`;
         const hash_actuel = crypto.createHash('sha256').update(dataToHash).digest('hex');
 
+        const releve_id = id || crypto.randomUUID();
+
+        // Accepter timestamp passé (offline-first)
+        const dateReleve = date_releve ? new Date(date_releve) : new Date();
+
         const insertReleveQuery = `
             INSERT INTO releves_pesee 
-            (capteur_id, poids_mesure_kg, coordonnees_gps, signature_equipement, hash_actuel, hash_precedent)
-            VALUES ($1, $2, ST_GeomFromEWKT($3), $4, $5, $6)
+            (id, capteur_id, poids_mesure_kg, coordonnees_gps, signature_equipement, hash_actuel, hash_precedent, date_releve)
+            VALUES ($1, $2, $3, ST_GeomFromEWKT($4), $5, $6, $7, $8)
             RETURNING id;
         `;
         const releveResult = await db.query(insertReleveQuery, [
+            releve_id, 
             capteur_id, 
             poids_mesure_kg, 
             pointGeoJSON, 
             signature_equipement, 
             hash_actuel, 
-            hash_precedent
+            hash_precedent,
+            dateReleve
         ]);
         
-        const releve_id = releveResult.rows[0].id;
+        const newReleveId = releveResult.rows[0].id;
 
         if (!estDansZone) {
+            const alerteId = crypto.randomUUID();
             const insertAlerteQuery = `
-                INSERT INTO alertes_fraude (releve_id, type_anomalie, description_detaillee)
-                VALUES ($1, $2, $3)
+                INSERT INTO alertes_fraude (id, releve_id, type_anomalie, description_detaillee)
+                VALUES ($1, $2, $3, $4)
             `;
             await db.query(insertAlerteQuery, [
-                releve_id, 
+                alerteId,
+                newReleveId, 
                 'HORS_ZONE', 
                 `Pesée hors limites géographiques. Coordonnées: ${latitude}, ${longitude}`
             ]);
@@ -69,7 +93,7 @@ exports.enregistrerPesee = async (req, res) => {
             success: true,
             message: estDansZone ? 'Relevé valide enregistré.' : 'Anomalie détectée : Relevé hors zone, alerte transmise au centre de contrôle.',
             data: {
-                releve_id,
+                releve_id: newReleveId,
                 hash_actuel,
                 statut: estDansZone ? 'VALIDE' : 'FRAUDE_SUSPECTEE'
             }
@@ -122,7 +146,7 @@ exports.verifierIntegrite = async (req, res) => {
 
         res.json({
             success: true,
-            chaine_integre: chaineValide,
+            integre: chaineValide,
             message: chaineValide 
                 ? "L'intégrité de la base de données est garantie. Aucun registre n'a été altéré." 
                 : `FRAUDE DÉTECTÉE ! Une modification non autorisée a eu lieu au niveau de l'enregistrement ID: ${erreurIndex}`
@@ -144,7 +168,7 @@ exports.getConcessions = async (req, res) => {
                 c.date_attribution, 
                 c.date_expiration,
                 e.nom_entreprise,
-                ST_AsGeoJSON(c.limites_spatiales)::json AS geojson
+                ST_AsGeoJSON(c.limites_spatialiaux)::json AS geojson
             FROM concessions c
             LEFT JOIN entreprises e ON c.entreprise_id = e.id;
         `;
@@ -170,6 +194,54 @@ exports.getConcessions = async (req, res) => {
         });
     } catch (err) {
         console.error('Erreur Concessions:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// 5. Récupérer toutes les pesées (avec jointures pour le frontend)
+exports.getPesees = async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                r.id,
+                r.capteur_id,
+                r.poids_mesure_kg,
+                ST_X(r.coordonnees_gps::geometry) as longitude,
+                ST_Y(r.coordonnees_gps::geometry) as latitude,
+                r.hash_actuel,
+                r.hash_precedent,
+                r.date_releve,
+                c.code_permis,
+                c.minerai,
+                c.statut
+            FROM releves_pesee r
+            LEFT JOIN capteurs_iot s ON r.capteur_id = s.id
+            LEFT JOIN concessions c ON s.concession_id = c.id
+            ORDER BY r.date_releve DESC
+        `;
+        const result = await db.query(query);
+        
+        const data = result.rows.map(row => ({
+            id: row.id,
+            capteur_id: row.capteur_id,
+            poids_mesure_kg: row.poids_mesure_kg,
+            latitude: parseFloat(row.latitude),
+            longitude: parseFloat(row.longitude),
+            hash_actuel: row.hash_actuel,
+            hash_precedent: row.hash_precedent,
+            date_releve: row.date_releve,
+            code_permis: row.code_permis || 'INCONNU',
+            minerai: row.minerai || 'AUTRE',
+            statut: row.statut || 'EN_ATTENTE'
+        }));
+
+        res.json({
+            success: true,
+            count: data.length,
+            data: data
+        });
+    } catch (err) {
+        console.error('Erreur Pesees:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 };
