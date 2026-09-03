@@ -4,6 +4,7 @@ require('dotenv').config();
 
 const peseeRoutes = require('./routes/peseeRoutes');
 const authRoutes = require('./routes/authRoutes');
+const inspecteurRoutes = require('./routes/inspecteurRoutes');
 
 const app = express();
 
@@ -14,6 +15,7 @@ app.use(cors());
 // Definition des routes API
 app.use('/api/auth', authRoutes);
 app.use('/api/pesees', peseeRoutes);
+app.use('/api/inspecteur', inspecteurRoutes);
 
 // Route de vérification de l'état du serveur
 app.get('/', (req, res) => {

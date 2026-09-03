@@ -79,7 +79,11 @@ CREATE TABLE IF NOT EXISTS alertes_fraude (
   releve_id TEXT REFERENCES releves_pesee(id),
   type_anomalie TEXT NOT NULL,
   description_detaillee TEXT,
-  date_alerte TIMESTAMP DEFAULT NOW()
+  date_alerte TIMESTAMP DEFAULT NOW(),
+  rfid_uid TEXT,
+  operateur_nom TEXT,
+  permis_numero TEXT,
+  site_nom TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_alertes_releve 
