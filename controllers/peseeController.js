@@ -124,15 +124,14 @@ exports.getAlertes = async (req, res) => {
 // 3. Vérifier l'intégrité de la chaîne de Hash
 exports.verifierIntegrite = async (req, res) => {
   try {
-    const { permisId } = req.query;
+    const query = `
+      SELECT r.*, o.nom as operateur_nom, o.permis_numero, o.site_nom
+      FROM releves_pesee r
+      LEFT JOIN operateurs_rfid o ON o.rfid_uid = r.capteur_id
+      ORDER BY r.date_releve ASC
+    `;
 
-    const query = permisId
-      ? `SELECT * FROM releves_pesee WHERE capteur_id = $1 ORDER BY date_releve ASC`
-      : `SELECT * FROM releves_pesee ORDER BY date_releve ASC`;
-
-    const result = permisId
-      ? await db.query(query, [permisId])
-      : await db.query(query);
+    const result = await db.query(query);
 
     const blocs = result.rows;
 
@@ -168,16 +167,16 @@ exports.verifierIntegrite = async (req, res) => {
       }
 
       const blocVerifie = {
-        index:         i + 1,
-        id:            bloc.id,
-        permisId:      bloc.capteur_id,
-        camionId:      bloc.capteur_id,
-        operateurNom:  bloc.capteur_id ?? 'Capteur inconnu',
-        poidsNetKg:    parseFloat(bloc.poids_mesure_kg ?? 0),
-        timestamp:     bloc.date_releve,
-        latitude:      0,
-        longitude:     0,
-        hashActuel:    bloc.hash_actuel,
+        index:        i + 1,
+        id:           bloc.id,
+        permisId:     bloc.permis_numero ?? bloc.capteur_id,
+        operateurNom: bloc.operateur_nom ?? bloc.capteur_id,
+        siteNom:      bloc.site_nom ?? '—',
+        poidsNetKg:   parseFloat(bloc.poids_mesure_kg ?? 0),
+        timestamp:    bloc.date_releve,
+        latitude:     0,
+        longitude:    0,
+        hashActuel:   bloc.hash_actuel,
         hashPrecedent: bloc.hash_precedent,
         hashAttendu,
         integre,

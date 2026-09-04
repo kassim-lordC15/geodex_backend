@@ -83,7 +83,11 @@ CREATE TABLE IF NOT EXISTS alertes_fraude (
   rfid_uid TEXT,
   operateur_nom TEXT,
   permis_numero TEXT,
-  site_nom TEXT
+  site_nom TEXT,
+  statut VARCHAR(32) DEFAULT 'NON_TRAITEE',
+  latitude DECIMAL(10,6) DEFAULT 0,
+  longitude DECIMAL(10,6) DEFAULT 0,
+  poids_kg DECIMAL(10,3) DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_alertes_releve 
@@ -228,3 +232,100 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO alertes_fraude (id, releve_id, type_anomalie, description_detaillee) VALUES
   ('ALERT-003', 'RELEV-004', 'HORS_ZONE', 'Camion détecté à 500m de la zone autorisée - Coordonnées: 9.52, -6.48')
 ON CONFLICT (id) DO NOTHING;
+
+-- 4. Table operateurs_rfid (badges RFID + quotas)
+CREATE TABLE IF NOT EXISTS operateurs_rfid (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  rfid_uid VARCHAR(64) UNIQUE NOT NULL,
+  nom VARCHAR(255) NOT NULL,
+  permis_id VARCHAR(64),
+  permis_numero VARCHAR(64),
+  site_nom VARCHAR(128),
+  quota_jour_kg DECIMAL(10,3) NOT NULL DEFAULT 0.500,
+  quota_mensuel_kg DECIMAL(10,3) NOT NULL DEFAULT 12.000,
+  quota_jour_consomme_kg DECIMAL(10,3) NOT NULL DEFAULT 0,
+  quota_mensuel_consomme_kg DECIMAL(10,3) NOT NULL DEFAULT 0,
+  sites_autorises TEXT[] DEFAULT ARRAY['Tongon'],
+  date_expiration DATE,
+  actif BOOLEAN DEFAULT true,
+  coordonnees_site GEOGRAPHY(POINT, 4326),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_operateurs_rfid_uid ON operateurs_rfid(rfid_uid);
+
+INSERT INTO operateurs_rfid (
+  rfid_uid, nom, permis_numero, site_nom,
+  quota_jour_kg, quota_mensuel_kg,
+  quota_jour_consomme_kg, quota_mensuel_consomme_kg,
+  date_expiration, sites_autorises,
+  coordonnees_site
+)
+SELECT * FROM (VALUES
+  ('CARD-A1B2C3', 'KONÉ Ibrahim',  'PM-CI-2019-001', 'Tongon',
+   0.500, 12.000, 0.120, 3.400,
+   '2029-03-11'::date, ARRAY['Tongon','Séguéla'],
+   ST_SetSRID(ST_MakePoint(-6.483, 9.167), 4326)::geography),
+
+  ('CARD-D4E5F6', 'KOUASSI Aya',   'PM-CI-2021-088', 'Séguéla',
+   0.300, 8.000, 0.299, 7.800,
+   '2031-04-19'::date, ARRAY['Séguéla'],
+   ST_SetSRID(ST_MakePoint(-6.67, 8.00), 4326)::geography),
+
+  ('CARD-QUOTA0', 'BAMBA Seydou',  'PM-CI-2014-003', 'Agbaou',
+   0.300, 8.000, 0.300, 8.000,
+   '2024-01-31'::date, ARRAY['Agbaou'],
+   ST_SetSRID(ST_MakePoint(-5.73, 6.32), 4326)::geography)
+) AS v(rfid_uid, nom, permis_numero, site_nom,
+       quota_jour_kg, quota_mensuel_kg,
+       quota_jour_consomme_kg, quota_mensuel_consomme_kg,
+       date_expiration, sites_autorises, coordonnees_site)
+WHERE NOT EXISTS (SELECT 1 FROM operateurs_rfid LIMIT 1);
+
+-- 5. Table zones_permis (geofence bornes)
+CREATE TABLE IF NOT EXISTS zones_permis (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  permis_numero VARCHAR(64) NOT NULL,
+  site_nom VARCHAR(128),
+  zone GEOGRAPHY(POLYGON, 4326) NOT NULL,
+  rayon_tolerance_m INTEGER DEFAULT 5000
+);
+
+CREATE INDEX IF NOT EXISTS idx_zones_permis_permis ON zones_permis(permis_numero);
+
+INSERT INTO zones_permis (permis_numero, site_nom, zone)
+SELECT * FROM (VALUES
+  ('PM-CI-2019-001', 'Tongon',
+   ST_GeogFromText('SRID=4326;POLYGON((-6.60 9.05,-6.37 9.05,-6.37 9.28,-6.60 9.28,-6.60 9.05))')),
+  ('PM-CI-2021-088', 'Séguéla',
+   ST_GeogFromText('SRID=4326;POLYGON((-6.80 7.88,-6.54 7.88,-6.54 8.12,-6.80 8.12,-6.80 7.88))')),
+  ('PM-CI-2014-003', 'Agbaou',
+   ST_GeogFromText('SRID=4326;POLYGON((-5.86 6.20,-5.60 6.20,-5.60 6.44,-5.86 6.44,-5.86 6.20))'))
+) AS v(permis_numero, site_nom, zone)
+WHERE NOT EXISTS (SELECT 1 FROM zones_permis LIMIT 1);
+
+-- 6. Table pesees_borne (journal cycles complets borne)
+CREATE TABLE IF NOT EXISTS pesees_borne (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  rfid_uid VARCHAR(64) NOT NULL,
+  operateur_nom VARCHAR(255),
+  permis_numero VARCHAR(64),
+  permis_id VARCHAR(64),
+  site_nom VARCHAR(128),
+  poids_net_kg DECIMAL(10,3) NOT NULL,
+  hors_zone BOOLEAN DEFAULT false,
+  distance_zone_m INTEGER DEFAULT 0,
+  statut VARCHAR(32) DEFAULT 'valide',
+  passeport_id VARCHAR(128),
+  signature VARCHAR(255),
+  qr_payload TEXT,
+  latitude DECIMAL(10,6),
+  longitude DECIMAL(10,6),
+  borne_id VARCHAR(64) DEFAULT 'BORNE-TONGON-01',
+  date_cycle TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pesees_borne_rfid ON pesees_borne(rfid_uid);
+CREATE INDEX IF NOT EXISTS idx_pesees_borne_date ON pesees_borne(date_cycle);
+CREATE INDEX IF NOT EXISTS idx_pesees_borne_permis ON pesees_borne(permis_numero);
