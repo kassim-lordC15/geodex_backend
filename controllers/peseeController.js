@@ -124,21 +124,29 @@ exports.getAlertes = async (req, res) => {
 // 3. Vérifier l'intégrité de la chaîne de Hash
 exports.verifierIntegrite = async (req, res) => {
   try {
-    const query = `
-      SELECT r.*, o.nom as operateur_nom, o.permis_numero, o.site_nom
-      FROM releves_pesee r
-      LEFT JOIN operateurs_rfid o ON o.rfid_uid = r.capteur_id
-      ORDER BY r.date_releve ASC
-    `;
+    const { permisId } = req.query;
 
-    const result = await db.query(query);
+    const query = permisId
+      ? `SELECT pb.*, o.nom as operateur_nom_join
+         FROM pesees_borne pb
+         LEFT JOIN operateurs_rfid o ON o.rfid_uid = pb.rfid_uid
+         WHERE pb.permis_numero = $1
+         ORDER BY pb.date_cycle ASC`
+      : `SELECT pb.*, o.nom as operateur_nom_join
+         FROM pesees_borne pb
+         LEFT JOIN operateurs_rfid o ON o.rfid_uid = pb.rfid_uid
+         ORDER BY pb.date_cycle ASC`;
+
+    const result = permisId
+      ? await db.query(query, [permisId])
+      : await db.query(query);
 
     const blocs = result.rows;
 
     if (blocs.length === 0) {
       return res.json({
         integre: true,
-        message: 'Aucune pesée enregistrée',
+        message: 'Aucune pesée borne enregistrée',
         blocs: [],
         rapport: { total: 0, integres: 0, corrompus: 0 },
       });
@@ -156,28 +164,29 @@ exports.verifierIntegrite = async (req, res) => {
       let raisonEchec = null;
 
       if (i === 0) {
-        integre = bloc.hash_precedent === null;
+        integre = bloc.hash_precedent_chaine === null;
         if (!integre) raisonEchec = 'Bloc genesis avec hash_precedent non nul';
       } else {
-        hashAttendu = precedent.hash_actuel;
-        integre = bloc.hash_precedent === hashAttendu;
+        hashAttendu = precedent.hash_chaine;
+        integre = bloc.hash_precedent_chaine === hashAttendu;
         if (!integre) {
-          raisonEchec = `Hash attendu: ${hashAttendu?.substring(0, 16)}... — Hash trouvé: ${bloc.hash_precedent?.substring(0, 16)}...`;
+          raisonEchec = `Hash attendu: ${hashAttendu?.substring(0, 16)}... — Hash trouvé: ${bloc.hash_precedent_chaine?.substring(0, 16)}...`;
         }
       }
 
       const blocVerifie = {
         index:        i + 1,
         id:           bloc.id,
-        permisId:     bloc.permis_numero ?? bloc.capteur_id,
-        operateurNom: bloc.operateur_nom ?? bloc.capteur_id,
+        permisId:     bloc.permis_numero ?? '—',
+        operateurNom: bloc.operateur_nom ?? bloc.operateur_nom_join ?? bloc.rfid_uid,
         siteNom:      bloc.site_nom ?? '—',
-        poidsNetKg:   parseFloat(bloc.poids_mesure_kg ?? 0),
-        timestamp:    bloc.date_releve,
-        latitude:     0,
-        longitude:    0,
-        hashActuel:   bloc.hash_actuel,
-        hashPrecedent: bloc.hash_precedent,
+        poidsNetKg:   parseFloat(bloc.poids_net_kg ?? 0),
+        timestamp:    bloc.date_cycle,
+        latitude:     parseFloat(bloc.latitude ?? 0),
+        longitude:    parseFloat(bloc.longitude ?? 0),
+        horsZone:     bloc.hors_zone ?? false,
+        hashActuel:   bloc.hash_chaine,
+        hashPrecedent: bloc.hash_precedent_chaine,
         hashAttendu,
         integre,
         raisonEchec,
@@ -188,21 +197,28 @@ exports.verifierIntegrite = async (req, res) => {
       if (!integre && premierBlocCorrompu === null) {
         premierBlocCorrompu = blocVerifie;
 
-        await db.query(
-          `INSERT INTO alertes_fraude (
-            type_anomalie, description_detaillee, permis_numero,
-            latitude, longitude, poids_kg, date_alerte, statut
-          ) VALUES ($1,$2,$3,$4,$5,$6,NOW(),'NON_TRAITEE')
-          ON CONFLICT DO NOTHING`,
-          [
-            'FALSIFICATION_CHAINE',
-            `Bloc #${i + 1} corrompu — Capteur ${bloc.capteur_id} — Poids: ${bloc.poids_mesure_kg}kg`,
-            bloc.capteur_id,
-            0,
-            0,
-            parseFloat(bloc.poids_mesure_kg ?? 0),
-          ]
-        );
+        try {
+          await db.query(
+            `INSERT INTO alertes_fraude (
+              type_anomalie, description, permis_numero,
+              operateur_nom, site_nom,
+              latitude, longitude, poids_kg,
+              date_alerte, statut
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),'NON_TRAITEE')`,
+            [
+              'FALSIFICATION_CHAINE',
+              `Bloc #${i + 1} corrompu — ${bloc.operateur_nom ?? bloc.rfid_uid} — Permis ${bloc.permis_numero} — Poids déclaré: ${bloc.poids_net_kg}kg`,
+              bloc.permis_numero,
+              bloc.operateur_nom ?? bloc.rfid_uid,
+              bloc.site_nom,
+              parseFloat(bloc.latitude ?? 0),
+              parseFloat(bloc.longitude ?? 0),
+              parseFloat(bloc.poids_net_kg ?? 0),
+            ]
+          );
+        } catch (e) {
+          console.error('[GEODEX][CHAINE] Erreur log alerte:', e.message);
+        }
       }
     }
 
@@ -210,22 +226,18 @@ exports.verifierIntegrite = async (req, res) => {
     const corrompus = blocsVerifies.filter(b => !b.integre).length;
 
     res.json({
-      integre:            corrompus === 0,
-      message:            corrompus === 0
+      integre:             corrompus === 0,
+      message:             corrompus === 0
         ? `Chaîne intègre — ${integres} blocs vérifiés`
         : `⛔ ${corrompus} bloc(s) corrompu(s) détecté(s)`,
       premierBlocCorrompu,
-      blocs:              blocsVerifies,
-      rapport: {
-        total:    blocs.length,
-        integres,
-        corrompus,
-      },
+      blocs:               blocsVerifies,
+      rapport: { total: blocs.length, integres, corrompus },
     });
 
-  } catch (err) {
-    console.error('verifierIntegrite error:', err);
-    res.status(500).json({ success: false, error: err.message });
+  } catch (e) {
+    console.error('verifierIntegrite error:', e);
+    res.status(500).json({ succes: false, erreur: e.message });
   }
 };
 
@@ -237,24 +249,26 @@ exports.devFalsifierBloc = async (req, res) => {
 
   try {
     const result = await db.query(
-      `SELECT id, poids_mesure_kg FROM releves_pesee ORDER BY date_releve ASC LIMIT 5 OFFSET 3`
+      `SELECT id, poids_net_kg FROM pesees_borne ORDER BY date_cycle ASC LIMIT 1 OFFSET 3`
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ erreur: 'Bloc introuvable' });
+      return res.status(404).json({
+        erreur: 'Pas assez de pesées en base — générez d\'abord 4 passeports depuis la borne'
+      });
     }
 
     const bloc = result.rows[0];
-    const nouveauPoids = parseFloat(bloc.poids_mesure_kg) + 999.99;
+    const nouveauPoids = parseFloat(bloc.poids_net_kg) + 99.999;
 
     await db.query(
-      `UPDATE releves_pesee SET poids_mesure_kg = $1 WHERE id = $2`,
+      `UPDATE pesees_borne SET poids_net_kg = $1 WHERE id = $2`,
       [nouveauPoids, bloc.id]
     );
 
     res.json({
       succes: true,
-      message: `Bloc #4 falsifié — poids modifié de ${bloc.poids_mesure_kg}kg à ${nouveauPoids}kg`,
+      message: `Bloc #4 falsifié — poids modifié de ${bloc.poids_net_kg}kg → ${nouveauPoids}kg`,
       blocId: bloc.id,
     });
 
@@ -269,24 +283,15 @@ exports.devResetChaine = async (req, res) => {
   }
 
   try {
-    const original = await db.query(
-      `SELECT poids_mesure_kg FROM releves_pesee ORDER BY date_releve ASC LIMIT 1 OFFSET 3`
+    await db.query(
+      `UPDATE pesees_borne
+       SET poids_net_kg = ABS(poids_net_kg - 99.999)
+       WHERE id = (
+         SELECT id FROM pesees_borne ORDER BY date_cycle ASC LIMIT 1 OFFSET 3
+       )`
     );
-    const originalPoids = original.rows[0]?.poids_mesure_kg;
 
-    const target = await db.query(
-      `SELECT id FROM releves_pesee ORDER BY date_releve ASC LIMIT 1 OFFSET 3`
-    );
-    const targetId = target.rows[0]?.id;
-
-    if (targetId && originalPoids !== undefined) {
-      await db.query(
-        `UPDATE releves_pesee SET poids_mesure_kg = $1 WHERE id = $2`,
-        [originalPoids, targetId]
-      );
-    }
-
-    res.json({ succes: true, message: 'Chaîne réinitialisée' });
+    res.json({ succes: true, message: 'Poids réinitialisé — relancez la vérification' });
   } catch (e) {
     res.status(500).json({ succes: false, erreur: e.message });
   }
@@ -735,6 +740,39 @@ exports.genererPasseport = async (req, res) => {
         parseFloat(latitude ?? 0), parseFloat(longitude ?? 0),
         borneId ?? 'BORNE-TONGON-01'
       ]
+    );
+
+    // ── 3bis. Calculer hash de chaîne pour ce bloc ─────────
+    const dernierBloc = await db.query(
+      `SELECT hash_chaine, index_bloc FROM pesees_borne
+       WHERE id != $1
+       ORDER BY date_cycle DESC LIMIT 1`,
+      [payload.id]
+    );
+
+    const hashPrecedent = dernierBloc.rows[0]?.hash_chaine ?? null;
+    const indexBloc     = (dernierBloc.rows[0]?.index_bloc ?? 0) + 1;
+
+    const hashChaine = crypto
+      .createHash('sha256')
+      .update([
+        rfidUid,
+        operateurNom,
+        permisNumero ?? '',
+        parseFloat(poidsNetKg).toFixed(3),
+        new Date().toISOString(),
+        hashPrecedent ?? 'GENESIS',
+        nonce,
+      ].join('|'))
+      .digest('hex');
+
+    await db.query(
+      `UPDATE pesees_borne
+       SET hash_chaine = $1,
+           hash_precedent_chaine = $2,
+           index_bloc = $3
+       WHERE passeport_id = $4`,
+      [hashChaine, hashPrecedent, indexBloc, payload.id]
     );
 
     // ── 4. Mise à jour quota en DB ────────────────────────

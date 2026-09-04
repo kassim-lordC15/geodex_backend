@@ -323,7 +323,10 @@ CREATE TABLE IF NOT EXISTS pesees_borne (
   longitude DECIMAL(10,6),
   borne_id VARCHAR(64) DEFAULT 'BORNE-TONGON-01',
   date_cycle TIMESTAMPTZ DEFAULT NOW(),
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  hash_chaine VARCHAR(255),
+  hash_precedent_chaine VARCHAR(255),
+  index_bloc INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_pesees_borne_rfid ON pesees_borne(rfid_uid);
