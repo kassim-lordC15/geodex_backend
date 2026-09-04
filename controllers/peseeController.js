@@ -121,15 +121,14 @@ exports.getAlertes = async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 };
-
 // 3. Vérifier l'intégrité de la chaîne de Hash
 exports.verifierIntegrite = async (req, res) => {
   try {
     const { permisId } = req.query;
 
     const query = permisId
-      ? `SELECT * FROM releves_pesee WHERE permis_id = $1 ORDER BY timestamp ASC`
-      : `SELECT * FROM releves_pesee ORDER BY timestamp ASC`;
+      ? `SELECT * FROM releves_pesee WHERE capteur_id = $1 ORDER BY date_releve ASC`
+      : `SELECT * FROM releves_pesee ORDER BY date_releve ASC`;
 
     const result = permisId
       ? await db.query(query, [permisId])
@@ -169,16 +168,16 @@ exports.verifierIntegrite = async (req, res) => {
       }
 
       const blocVerifie = {
-        index: i + 1,
-        id: bloc.id,
-        permisId: bloc.permis_id,
-        camionId: bloc.camion_id,
-        operateurNom: bloc.operateur_nom ?? 'Inconnu',
-        poidsNetKg: parseFloat(bloc.poids_net_kg ?? 0),
-        timestamp: bloc.timestamp,
-        latitude: parseFloat(bloc.latitude ?? 0),
-        longitude: parseFloat(bloc.longitude ?? 0),
-        hashActuel: bloc.hash_actuel,
+        index:         i + 1,
+        id:            bloc.id,
+        permisId:      bloc.capteur_id,
+        camionId:      bloc.capteur_id,
+        operateurNom:  bloc.capteur_id ?? 'Capteur inconnu',
+        poidsNetKg:    parseFloat(bloc.poids_mesure_kg ?? 0),
+        timestamp:     bloc.date_releve,
+        latitude:      0,
+        longitude:     0,
+        hashActuel:    bloc.hash_actuel,
         hashPrecedent: bloc.hash_precedent,
         hashAttendu,
         integre,
@@ -198,11 +197,11 @@ exports.verifierIntegrite = async (req, res) => {
           ON CONFLICT DO NOTHING`,
           [
             'FALSIFICATION_CHAINE',
-            `Bloc #${i + 1} corrompu — Permis ${bloc.permis_id} — ${bloc.operateur_nom ?? 'Inconnu'} — Poids: ${bloc.poids_net_kg}kg`,
-            bloc.permis_id,
-            parseFloat(bloc.latitude ?? 0),
-            parseFloat(bloc.longitude ?? 0),
-            parseFloat(bloc.poids_net_kg ?? 0),
+            `Bloc #${i + 1} corrompu — Capteur ${bloc.capteur_id} — Poids: ${bloc.poids_mesure_kg}kg`,
+            bloc.capteur_id,
+            0,
+            0,
+            parseFloat(bloc.poids_mesure_kg ?? 0),
           ]
         );
       }
@@ -212,18 +211,19 @@ exports.verifierIntegrite = async (req, res) => {
     const corrompus = blocsVerifies.filter(b => !b.integre).length;
 
     res.json({
-      integre: corrompus === 0,
-      message: corrompus === 0
+      integre:            corrompus === 0,
+      message:            corrompus === 0
         ? `Chaîne intègre — ${integres} blocs vérifiés`
         : `⛔ ${corrompus} bloc(s) corrompu(s) détecté(s)`,
       premierBlocCorrompu,
-      blocs: blocsVerifies,
+      blocs:              blocsVerifies,
       rapport: {
-        total: blocs.length,
+        total:    blocs.length,
         integres,
         corrompus,
       },
     });
+
   } catch (err) {
     console.error('verifierIntegrite error:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -238,7 +238,7 @@ exports.devFalsifierBloc = async (req, res) => {
 
   try {
     const result = await db.query(
-      `SELECT id, poids_net_kg FROM releves_pesee ORDER BY timestamp ASC LIMIT 5 OFFSET 3`
+      `SELECT id, poids_mesure_kg FROM releves_pesee ORDER BY date_releve ASC LIMIT 5 OFFSET 3`
     );
 
     if (result.rows.length === 0) {
@@ -246,77 +246,21 @@ exports.devFalsifierBloc = async (req, res) => {
     }
 
     const bloc = result.rows[0];
-    const nouveauPoids = parseFloat(bloc.poids_net_kg) + 999.99;
+    const nouveauPoids = parseFloat(bloc.poids_mesure_kg) + 999.99;
 
     await db.query(
-      `UPDATE releves_pesee SET poids_net_kg = $1 WHERE id = $2`,
+      `UPDATE releves_pesee SET poids_mesure_kg = $1 WHERE id = $2`,
       [nouveauPoids, bloc.id]
     );
 
     res.json({
       succes: true,
-      message: `Bloc #4 falsifié — poids modifié de ${bloc.poids_net_kg}kg à ${nouveauPoids}kg`,
+      message: `Bloc #4 falsifié — poids modifié de ${bloc.poids_mesure_kg}kg à ${nouveauPoids}kg`,
       blocId: bloc.id,
     });
 
   } catch (e) {
     res.status(500).json({ succes: false, erreur: e.message });
-  }
-};
-
-exports.devResetChaine = async (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ erreur: 'Interdit en production' });
-  }
-
-  try {
-    await db.query(
-      `UPDATE releves_pesee
-       SET poids_net_kg = (
-         SELECT poids_net_kg FROM releves_pesee
-         ORDER BY timestamp ASC LIMIT 1 OFFSET 3
-       )
-       WHERE id = (
-         SELECT id FROM releves_pesee ORDER BY timestamp ASC LIMIT 1 OFFSET 3
-       )`
-    );
-
-    res.json({ succes: true, message: 'Chaîne réinitialisée' });
-  } catch (e) {
-    res.status(500).json({ succes: false, erreur: e.message });
-  }
-};
-
-// [DEV ONLY] Falsifier un bloc pour démonstration
-exports.devFalsifierBloc = async (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ erreur: 'Interdit en production' });
-  }
-
-  try {
-    const result = await db.query(
-      `SELECT id, poids_net_kg FROM releves_pesee ORDER BY timestamp ASC LIMIT 5 OFFSET 3`
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ erreur: 'Bloc introuvable' });
-    }
-
-    const bloc = result.rows[0];
-    const nouveauPoids = parseFloat(bloc.poids_net_kg) + 999.99;
-
-    await db.query(
-      `UPDATE releves_pesee SET poids_net_kg = $1 WHERE id = $2`,
-      [nouveauPoids, bloc.id]
-    );
-
-    res.json({
-      succes: true,
-      message: `Bloc #4 falsifié — poids modifié de ${bloc.poids_net_kg}kg à ${nouveauPoids}kg`,
-      blocId: bloc.id,
-    });
-  } catch (err) {
-    res.status(500).json({ succes: false, erreur: err.message });
   }
 };
 
@@ -327,25 +271,25 @@ exports.devResetChaine = async (req, res) => {
 
   try {
     const original = await db.query(
-      `SELECT poids_net_kg FROM releves_pesee ORDER BY timestamp ASC LIMIT 1 OFFSET 3`
+      `SELECT poids_mesure_kg FROM releves_pesee ORDER BY date_releve ASC LIMIT 1 OFFSET 3`
     );
-    const originalPoids = original.rows[0]?.poids_net_kg;
+    const originalPoids = original.rows[0]?.poids_mesure_kg;
 
     const target = await db.query(
-      `SELECT id FROM releves_pesee ORDER BY timestamp ASC LIMIT 1 OFFSET 3`
+      `SELECT id FROM releves_pesee ORDER BY date_releve ASC LIMIT 1 OFFSET 3`
     );
     const targetId = target.rows[0]?.id;
 
     if (targetId && originalPoids !== undefined) {
       await db.query(
-        `UPDATE releves_pesee SET poids_net_kg = $1 WHERE id = $2`,
+        `UPDATE releves_pesee SET poids_mesure_kg = $1 WHERE id = $2`,
         [originalPoids, targetId]
       );
     }
 
     res.json({ succes: true, message: 'Chaîne réinitialisée' });
-  } catch (err) {
-    res.status(500).json({ succes: false, erreur: err.message });
+  } catch (e) {
+    res.status(500).json({ succes: false, erreur: e.message });
   }
 };
 
