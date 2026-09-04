@@ -8,6 +8,10 @@ router.get('/alertes', peseeController.getAlertes);
 router.get('/verify-chain', peseeController.verifierIntegrite);
 router.get('/concessions', peseeController.getConcessions);
 
+// [DEV ONLY] Falsification pour démo
+router.post('/pesees/dev/falsifier', peseeController.devFalsifierBloc);
+router.post('/pesees/dev/reset-chaine', peseeController.devResetChaine);
+
 // Routes borne (nouvelles)
 router.post('/bornes/rfid-scan',    peseeController.rfidScan);
 router.get('/bornes/poids',         peseeController.getPoidsSimule);
