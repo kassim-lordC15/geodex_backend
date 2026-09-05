@@ -249,7 +249,7 @@ exports.devFalsifierBloc = async (req, res) => {
 
   try {
     const result = await db.query(
-      `SELECT id, poids_net_kg FROM pesees_borne ORDER BY date_cycle ASC LIMIT 1 OFFSET 3`
+      `SELECT id, poids_net_g FROM pesees_borne ORDER BY date_cycle ASC LIMIT 1 OFFSET 3`
     );
 
     if (result.rows.length === 0) {
@@ -259,16 +259,16 @@ exports.devFalsifierBloc = async (req, res) => {
     }
 
     const bloc = result.rows[0];
-    const nouveauPoids = parseFloat(bloc.poids_net_kg) + 99.999;
+    const nouveauPoids = parseFloat(bloc.poids_net_g) + 99999.999;
 
     await db.query(
-      `UPDATE pesees_borne SET poids_net_kg = $1 WHERE id = $2`,
+      `UPDATE pesees_borne SET poids_net_g = $1 WHERE id = $2`,
       [nouveauPoids, bloc.id]
     );
 
     res.json({
       succes: true,
-      message: `Bloc #4 falsifié — poids modifié de ${bloc.poids_net_kg}kg → ${nouveauPoids}kg`,
+      message: `Bloc #4 falsifié — poids modifié de ${bloc.poids_net_g}g → ${nouveauPoids}g`,
       blocId: bloc.id,
     });
 
@@ -285,7 +285,7 @@ exports.devResetChaine = async (req, res) => {
   try {
     await db.query(
       `UPDATE pesees_borne
-       SET poids_net_kg = ABS(poids_net_kg - 99.999)
+       SET poids_net_g = ABS(poids_net_g - 99999.999)
        WHERE id = (
          SELECT id FROM pesees_borne ORDER BY date_cycle ASC LIMIT 1 OFFSET 3
        )`
@@ -623,11 +623,11 @@ async function enregistrerReleveBorne({ permisId, poidsNetKg, latitude, longitud
 // ─────────────────────────────────────────────────────────
 exports.genererPasseport = async (req, res) => {
   const { operateurId, operateurNom, permisId, permisNumero,
-          poidsNetKg, latitude, longitude, borneId } = req.body;
+          poidsNetG, latitude, longitude, borneId } = req.body;
 
-  if (!operateurId || !poidsNetKg) {
+  if (!operateurId || !poidsNetG) {
     return res.status(400).json({
-      succes: false, erreur: 'operateurId et poidsNetKg requis'
+      succes: false, erreur: 'operateurId et poidsNetG requis'
     });
   }
 
@@ -692,7 +692,7 @@ exports.genererPasseport = async (req, res) => {
       permisId:     permisId ?? permisNumero,
       permisNumero: permisNumero ?? permisId,
       borneId:      borneId ?? 'BORNE-TONGON-01',
-      poidsNetKg:   parseFloat(poidsNetKg),
+      poidsNetG:    parseFloat(poidsNetG),
       latitude:     parseFloat(latitude  ?? 9.167),
       longitude:    parseFloat(longitude ?? -6.483),
       horsZone,
@@ -729,12 +729,12 @@ exports.genererPasseport = async (req, res) => {
     await db.query(
       `INSERT INTO pesees_borne
         (rfid_uid, operateur_nom, permis_numero, permis_id, site_nom,
-         poids_net_kg, hors_zone, distance_zone_m, statut,
+         poids_net_g, hors_zone, distance_zone_m, statut,
          passeport_id, signature, qr_payload, latitude, longitude, borne_id, date_cycle)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())`,
       [
         rfidUid, operateurNom, permisNumero, permisId, siteNom,
-        parseFloat(poidsNetKg), horsZone, Math.round(distanceM),
+        parseFloat(poidsNetG), horsZone, Math.round(distanceM),
         horsZone ? 'hors_zone' : 'valide',
         payload.id, signature, qrPayload,
         parseFloat(latitude ?? 0), parseFloat(longitude ?? 0),
@@ -748,7 +748,7 @@ exports.genererPasseport = async (req, res) => {
         SET quota_jour_consomme_kg    = quota_jour_consomme_kg    + $1,
             quota_mensuel_consomme_kg = quota_mensuel_consomme_kg + $1
         WHERE id = $2`,
-      [parseFloat(poidsNetKg), operateurId]
+      [parseFloat(poidsNetG) / 1000, operateurId]
     );
 
     // ── 4. Réinitialiser poids simulé ────────────────────

@@ -312,7 +312,7 @@ CREATE TABLE IF NOT EXISTS pesees_borne (
   permis_numero VARCHAR(64),
   permis_id VARCHAR(64),
   site_nom VARCHAR(128),
-  poids_net_kg DECIMAL(10,3) NOT NULL,
+  poids_net_g DECIMAL(10,3) NOT NULL,
   hors_zone BOOLEAN DEFAULT false,
   distance_zone_m INTEGER DEFAULT 0,
   statut VARCHAR(32) DEFAULT 'valide',
@@ -357,7 +357,7 @@ BEGIN
     COALESCE(NEW.rfid_uid, '') || '|' ||
     COALESCE(NEW.operateur_nom, '') || '|' ||
     COALESCE(NEW.permis_numero, '') || '|' ||
-    COALESCE(NEW.poids_net_kg::TEXT, '0') || '|' ||
+    COALESCE(NEW.poids_net_g::TEXT, '0') || '|' ||
     COALESCE(NEW.date_cycle::TEXT, '') || '|' ||
     COALESCE(precedent.hash_chaine, 'GENESIS') || '|' ||
     extract(epoch from NOW())::TEXT
@@ -400,33 +400,33 @@ BEGIN
       NEW.operateur_nom,
       NEW.permis_numero,
       NEW.site_nom,
-      NEW.poids_net_kg,
-      NEW.latitude,
-      NEW.longitude,
-      NOW(),
-      'NON_TRAITEE'
-    )
-    ON CONFLICT DO NOTHING;
-  END IF;
+       NEW.poids_net_g,
+       NEW.latitude,
+       NEW.longitude,
+       NOW(),
+       'NON_TRAITEE'
+     )
+     ON CONFLICT DO NOTHING;
+   END IF;
 
-  -- Si le poids a été modifié, créer une alerte
-  IF NEW.poids_net_kg IS NOT NULL AND OLD.poids_net_kg IS NOT NULL
-     AND NEW.poids_net_kg != OLD.poids_net_kg THEN
-    INSERT INTO alertes_fraude (
-      id, type_anomalie, description, rfid_uid, operateur_nom,
-      permis_numero, site_nom, poids_kg, latitude, longitude,
-      date_alerte, statut
-    ) VALUES (
-      gen_random_uuid()::TEXT,
-      'FALSIFICATION_CHAINE',
-      'Poids modifié sur bloc #' || COALESCE(NEW.index_bloc::TEXT, '?') ||
-      ' — ' || COALESCE(NEW.operateur_nom, NEW.rfid_uid) ||
-      ' — ancien: ' || OLD.poids_net_kg || 'kg, nouveau: ' || NEW.poids_net_kg || 'kg',
-      NEW.rfid_uid,
-      NEW.operateur_nom,
-      NEW.permis_numero,
-      NEW.site_nom,
-      NEW.poids_net_kg,
+   -- Si le poids a été modifié, créer une alerte
+   IF NEW.poids_net_g IS NOT NULL AND OLD.poids_net_g IS NOT NULL
+      AND NEW.poids_net_g != OLD.poids_net_g THEN
+     INSERT INTO alertes_fraude (
+       id, type_anomalie, description, rfid_uid, operateur_nom,
+       permis_numero, site_nom, poids_kg, latitude, longitude,
+       date_alerte, statut
+     ) VALUES (
+       gen_random_uuid()::TEXT,
+       'FALSIFICATION_CHAINE',
+       'Poids modifié sur bloc #' || COALESCE(NEW.index_bloc::TEXT, '?') ||
+       ' — ' || COALESCE(NEW.operateur_nom, NEW.rfid_uid) ||
+       ' — ancien: ' || OLD.poids_net_g || 'g, nouveau: ' || NEW.poids_net_g || 'g',
+       NEW.rfid_uid,
+       NEW.operateur_nom,
+       NEW.permis_numero,
+       NEW.site_nom,
+       NEW.poids_net_g,
       NEW.latitude,
       NEW.longitude,
       NOW(),
@@ -447,10 +447,10 @@ CREATE TRIGGER trg_detecter_falsification
   WHEN (OLD.hash_chaine IS NOT NULL AND NEW.hash_chaine != OLD.hash_chaine)
   EXECUTE FUNCTION detecter_falsification();
 
--- Trigger UPDATE pour alerter aussi si poids_net_kg modifié
+-- Trigger UPDATE pour alerter aussi si poids_net_g modifié
 DROP TRIGGER IF EXISTS trg_alerte_poids_modifie ON pesees_borne;
 CREATE TRIGGER trg_alerte_poids_modifie
   AFTER UPDATE ON pesees_borne
   FOR EACH ROW
-  WHEN (OLD.poids_net_kg IS NOT NULL AND NEW.poids_net_kg != OLD.poids_net_kg)
+  WHEN (OLD.poids_net_g IS NOT NULL AND NEW.poids_net_g != OLD.poids_net_g)
   EXECUTE FUNCTION detecter_falsification();
