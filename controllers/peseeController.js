@@ -180,7 +180,7 @@ exports.verifierIntegrite = async (req, res) => {
         permisId:     bloc.permis_numero ?? '—',
         operateurNom: bloc.operateur_nom ?? bloc.operateur_nom_join ?? bloc.rfid_uid,
         siteNom:      bloc.site_nom ?? '—',
-        poidsNetKg:   parseFloat(bloc.poids_net_kg ?? 0),
+        poidsNetG:    parseFloat(bloc.poids_net_g ?? 0),
         timestamp:    bloc.date_cycle,
         latitude:     parseFloat(bloc.latitude ?? 0),
         longitude:    parseFloat(bloc.longitude ?? 0),
@@ -853,60 +853,72 @@ exports.verifierPasseport = async (req, res) => {
 
 exports.getActiviteBornes = async (req, res) => {
   try {
-    const pesees = await db.query(`
+    const result = await pool.query(`
       SELECT
-        o.nom AS operateur,
-        o.permis_id,
-        o.quota_jour_kg,
-        o.quota_jour_consomme_kg,
-        o.quota_mensuel_kg,
-        o.quota_mensuel_consomme_kg,
         o.rfid_uid,
-        o.actif,
-        c.statut AS permis_statut,
-        c.minerai,
-        c.date_expiration,
-        e.nom_entreprise
+        o.nom,
+        o.permis_numero,
+        o.site_nom,
+        o.quota_jour_kg,
+        o.quota_mensuel_kg,
+        COALESCE(SUM(pb.poids_net_g) FILTER (
+          WHERE pb.date_cycle >= CURRENT_DATE
+          AND pb.date_cycle < CURRENT_DATE + INTERVAL '1 day'
+        ), 0) AS consomme_jour_g,
+        COALESCE(SUM(pb.poids_net_g) FILTER (
+          WHERE DATE_TRUNC('month', pb.date_cycle) = DATE_TRUNC('month', NOW())
+        ), 0) AS consomme_mois_g,
+        COUNT(pb.id) FILTER (
+          WHERE pb.date_cycle >= CURRENT_DATE
+          AND pb.date_cycle < CURRENT_DATE + INTERVAL '1 day'
+        ) AS nb_pesees_jour,
+        MAX(pb.date_cycle) AS derniere_pesee
       FROM operateurs_rfid o
-      LEFT JOIN concessions c ON c.code_permis = o.permis_id
-      LEFT JOIN entreprises e ON e.id = c.entreprise_id
-      ORDER BY o.created_at DESC
+      LEFT JOIN pesees_borne pb ON pb.rfid_uid = o.rfid_uid
+      WHERE o.actif = true
+      GROUP BY o.rfid_uid, o.nom, o.permis_numero, o.site_nom,
+               o.quota_jour_kg, o.quota_mensuel_kg
+      ORDER BY consomme_jour_g DESC
     `);
 
-    const stats = await db.query(`
-      SELECT
-        COUNT(*) AS total_operateurs,
-        SUM(quota_jour_consomme_kg) AS total_kg_jour,
-        COUNT(*) FILTER (
-          WHERE quota_jour_consomme_kg >= quota_jour_kg
-        ) AS quotas_depasses
-      FROM operateurs_rfid
-    `);
+    const operateurs = result.rows.map(r => {
+      const consommeJour  = parseFloat(r.consomme_jour_g);
+      const consommeMois  = parseFloat(r.consomme_mois_g);
+      const quotaJour     = parseFloat(r.quota_jour_kg);
+      const quotaMensuel  = parseFloat(r.quota_mensuel_kg);
+      const quotaDepasse  = consommeJour >= quotaJour;
+
+      return {
+        rfidUid:           r.rfid_uid,
+        nom:               r.nom,
+        permisNumero:      r.permis_numero,
+        siteNom:           r.site_nom,
+        quotaJourKg:       quotaJour,
+        quotaMensuelKg:    quotaMensuel,
+        consommeJourKg:    consommeJour,
+        consommeMoisKg:    consommeMois,
+        quotaJourRestantKg: Math.max(0, quotaJour - consommeJour),
+        nbPeseesJour:      parseInt(r.nb_pesees_jour),
+        dernierePesee:     r.derniere_pesee,
+        quotaDepasse,
+      };
+    });
+
+    const totalKgJour    = operateurs.reduce((s, o) => s + o.consommeJourKg, 0);
+    const quotasDepasses = operateurs.filter(o => o.quotaDepasse).length;
 
     res.json({
       succes: true,
-      operateurs: pesees.rows.map(r => ({
-        nom: r.operateur,
-        permisId: r.permis_id,
-        rfidUid: r.rfid_uid,
-        quotaJourKg: parseFloat(r.quota_jour_kg),
-        quotaJourConsommeKg: parseFloat(r.quota_jour_consomme_kg),
-        quotaMensuelKg: parseFloat(r.quota_mensuel_kg),
-        quotaMensuelConsommeKg: parseFloat(r.quota_mensuel_consomme_kg),
-        quotaDepasse: parseFloat(r.quota_jour_consomme_kg) >= parseFloat(r.quota_jour_kg),
-        actif: r.actif,
-        permisStatut: r.permis_statut ?? 'INCONNU',
-        minerai: r.minerai ?? 'Non renseigne',
-        entreprise: r.nom_entreprise ?? 'Non renseignee',
-        dateExpiration: r.date_expiration,
-      })),
+      operateurs,
       stats: {
-        totalOperateurs: parseInt(stats.rows[0].total_operateurs),
-        totalKgJour: parseFloat(stats.rows[0].total_kg_jour ?? 0),
-        quotasDepasses: parseInt(stats.rows[0].quotas_depasses),
+        totalOperateurs: operateurs.length,
+        totalKgJour,
+        quotasDepasses,
       },
     });
+
   } catch (e) {
+    console.error('getActiviteBornes error:', e);
     res.status(500).json({ succes: false, erreur: e.message });
   }
 };
