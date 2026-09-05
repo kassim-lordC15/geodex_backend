@@ -332,3 +332,125 @@ CREATE TABLE IF NOT EXISTS pesees_borne (
 CREATE INDEX IF NOT EXISTS idx_pesees_borne_rfid ON pesees_borne(rfid_uid);
 CREATE INDEX IF NOT EXISTS idx_pesees_borne_date ON pesees_borne(date_cycle);
 CREATE INDEX IF NOT EXISTS idx_pesees_borne_permis ON pesees_borne(permis_numero);
+
+-- ============================================================
+-- TRIGGERS — Chaîne d'intégrité automatique
+-- ============================================================
+
+-- Fonction de calcul automatique du hash de chaîne
+CREATE OR REPLACE FUNCTION calculer_hash_chaine()
+RETURNS TRIGGER AS $$
+DECLARE
+  precedent RECORD;
+  input_text TEXT;
+BEGIN
+  -- Récupérer le bloc précédent
+  SELECT hash_chaine, index_bloc INTO precedent
+  FROM pesees_borne
+  WHERE id != NEW.id
+    AND (NEW.rfid_uid IS NULL OR rfid_uid = NEW.rfid_uid)
+  ORDER BY date_cycle DESC
+  LIMIT 1;
+
+  -- Construire l'input du hash
+  input_text := (
+    COALESCE(NEW.rfid_uid, '') || '|' ||
+    COALESCE(NEW.operateur_nom, '') || '|' ||
+    COALESCE(NEW.permis_numero, '') || '|' ||
+    COALESCE(NEW.poids_net_kg::TEXT, '0') || '|' ||
+    COALESCE(NEW.date_cycle::TEXT, '') || '|' ||
+    COALESCE(precedent.hash_chaine, 'GENESIS') || '|' ||
+    extract(epoch from NOW())::TEXT
+  );
+
+  -- Calculer le hash
+  NEW.hash_chaine := encode(digest(input_text, 'sha256'), 'hex');
+  NEW.hash_precedent_chaine := precedent.hash_chaine;
+  NEW.index_bloc := COALESCE(precedent.index_bloc, 0) + 1;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger sur INSERT pour calculer automatiquement le hash
+DROP TRIGGER IF EXISTS trg_calculer_hash_chaine ON pesees_borne;
+CREATE TRIGGER trg_calculer_hash_chaine
+  BEFORE INSERT ON pesees_borne
+  FOR EACH ROW
+  WHEN (NEW.hash_chaine IS NULL)
+  EXECUTE FUNCTION calculer_hash_chaine();
+
+-- Fonction de détection de falsification
+CREATE OR REPLACE FUNCTION detecter_falsification()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Si le hash a été modifié manuellement, créer une alerte
+  IF NEW.hash_chaine IS NOT NULL AND OLD.hash_chaine IS NOT NULL
+     AND NEW.hash_chaine != OLD.hash_chaine THEN
+    INSERT INTO alertes_fraude (
+      id, type_anomalie, description, rfid_uid, operateur_nom,
+      permis_numero, site_nom, poids_kg, latitude, longitude,
+      date_alerte, statut
+    ) VALUES (
+      gen_random_uuid()::TEXT,
+      'FALSIFICATION_CHAINE',
+      'Modification manuelle détectée sur bloc #' || COALESCE(NEW.index_bloc::TEXT, '?') ||
+      ' — ' || COALESCE(NEW.operateur_nom, NEW.rfid_uid),
+      NEW.rfid_uid,
+      NEW.operateur_nom,
+      NEW.permis_numero,
+      NEW.site_nom,
+      NEW.poids_net_kg,
+      NEW.latitude,
+      NEW.longitude,
+      NOW(),
+      'NON_TRAITEE'
+    )
+    ON CONFLICT DO NOTHING;
+  END IF;
+
+  -- Si le poids a été modifié, créer une alerte
+  IF NEW.poids_net_kg IS NOT NULL AND OLD.poids_net_kg IS NOT NULL
+     AND NEW.poids_net_kg != OLD.poids_net_kg THEN
+    INSERT INTO alertes_fraude (
+      id, type_anomalie, description, rfid_uid, operateur_nom,
+      permis_numero, site_nom, poids_kg, latitude, longitude,
+      date_alerte, statut
+    ) VALUES (
+      gen_random_uuid()::TEXT,
+      'FALSIFICATION_CHAINE',
+      'Poids modifié sur bloc #' || COALESCE(NEW.index_bloc::TEXT, '?') ||
+      ' — ' || COALESCE(NEW.operateur_nom, NEW.rfid_uid) ||
+      ' — ancien: ' || OLD.poids_net_kg || 'kg, nouveau: ' || NEW.poids_net_kg || 'kg',
+      NEW.rfid_uid,
+      NEW.operateur_nom,
+      NEW.permis_numero,
+      NEW.site_nom,
+      NEW.poids_net_kg,
+      NEW.latitude,
+      NEW.longitude,
+      NOW(),
+      'NON_TRAITEE'
+    )
+    ON CONFLICT DO NOTHING;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger sur UPDATE pour détecter les modifications
+DROP TRIGGER IF EXISTS trg_detecter_falsification ON pesees_borne;
+CREATE TRIGGER trg_detecter_falsification
+  AFTER UPDATE ON pesees_borne
+  FOR EACH ROW
+  WHEN (OLD.hash_chaine IS NOT NULL AND NEW.hash_chaine != OLD.hash_chaine)
+  EXECUTE FUNCTION detecter_falsification();
+
+-- Trigger UPDATE pour alerter aussi si poids_net_kg modifié
+DROP TRIGGER IF EXISTS trg_alerte_poids_modifie ON pesees_borne;
+CREATE TRIGGER trg_alerte_poids_modifie
+  AFTER UPDATE ON pesees_borne
+  FOR EACH ROW
+  WHEN (OLD.poids_net_kg IS NOT NULL AND NEW.poids_net_kg != OLD.poids_net_kg)
+  EXECUTE FUNCTION detecter_falsification();

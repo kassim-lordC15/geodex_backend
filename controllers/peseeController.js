@@ -742,39 +742,6 @@ exports.genererPasseport = async (req, res) => {
       ]
     );
 
-    // ── 3bis. Calculer hash de chaîne pour ce bloc ─────────
-    const dernierBloc = await db.query(
-      `SELECT hash_chaine, index_bloc FROM pesees_borne
-       WHERE id != $1
-       ORDER BY date_cycle DESC LIMIT 1`,
-      [payload.id]
-    );
-
-    const hashPrecedent = dernierBloc.rows[0]?.hash_chaine ?? null;
-    const indexBloc     = (dernierBloc.rows[0]?.index_bloc ?? 0) + 1;
-
-    const hashChaine = crypto
-      .createHash('sha256')
-      .update([
-        rfidUid,
-        operateurNom,
-        permisNumero ?? '',
-        parseFloat(poidsNetKg).toFixed(3),
-        new Date().toISOString(),
-        hashPrecedent ?? 'GENESIS',
-        nonce,
-      ].join('|'))
-      .digest('hex');
-
-    await db.query(
-      `UPDATE pesees_borne
-       SET hash_chaine = $1,
-           hash_precedent_chaine = $2,
-           index_bloc = $3
-       WHERE passeport_id = $4`,
-      [hashChaine, hashPrecedent, indexBloc, payload.id]
-    );
-
     // ── 4. Mise à jour quota en DB ────────────────────────
     await db.query(
       `UPDATE operateurs_rfid
